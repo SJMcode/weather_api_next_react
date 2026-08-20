@@ -1,69 +1,332 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useEffect, useState, useRef } from "react";
+import { fetcher, weatherByCity, weatherByPoint, reverseGeocode } from "@/lib/weather";
+import { getPosition, Coords } from "@/lib/position";
+
+interface WeatherData {
+  location?: { name: string };
+  referenceTime: string; // Added to interface
+  timeseries: Array<{
+    validTime: string;
+    temp: number;
+    symbol: number;
+    summary: string;
+    windSpeed: number;
+    humidity: number;
+    precipitationMean: number;
+    airPressure: number;
+  }>;
+}
+
+interface GeocodeLocation {
+  address?: {
+    city?: string;
+    town?: string;
+    municipality?: string;
+  };
+}
+
+function getWeatherIcon(symbol: number): string {
+  if (symbol === 1 || symbol === 2) return "☀️";
+  if (symbol === 3 || symbol === 4) return "⛅";
+  if (symbol === 5 || symbol === 6) return "☁️";
+  if (symbol >= 7 && symbol <= 9) return "🌦️";
+  if (symbol >= 10 && symbol <= 17) return "🌧️";
+  if (symbol >= 18 && symbol <= 21) return "❄️";
+  if (symbol >= 22 && symbol <= 24) return "⛈️";
+  if (symbol >= 25 && symbol <= 27) return "❄️";
+  return "🌡️";
+}
+
+export default function Page() {
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  
+  const [weather, setWeather] = useState<WeatherData | null>(null);
+  const [cityName, setCityName] = useState("");
+  
+  const [coords, setCoords] = useState<Coords | null>(null);
+  const [askingLocation, setAskingLocation] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [isHovered, setIsHovered] = useState(false);
+
+  useEffect(() => {
+    async function locateUser() {
+      try {
+        const userCoords = await getPosition();
+        setCoords(userCoords);
+      } catch (err) {
+        console.log("GPS access denied, using fallback.");
+      } finally {
+        setAskingLocation(false);
+      }
+    }
+    locateUser();
+  }, []);
+
+  useEffect(() => {
+    if (askingLocation) return;
+
+    async function getWeatherData() {
+      setIsLoading(true);
+      setError(null);
+      
+      try {
+        let weatherPath = "";
+        if (search) {
+          weatherPath = weatherByCity(search);
+          const weatherData = await fetcher<WeatherData>(weatherPath);
+          setWeather(weatherData);
+          setCityName(weatherData.location?.name || search);
+        } else if (coords) {
+          weatherPath = weatherByPoint(coords.lon, coords.lat);
+          const [weatherData, geocodeData] = await Promise.all([
+            fetcher<WeatherData>(weatherPath),
+            fetcher<GeocodeLocation>(reverseGeocode(coords.lon, coords.lat))
+          ]);
+          setWeather(weatherData);
+          setCityName(
+            geocodeData.address?.city || 
+            geocodeData.address?.town || 
+            geocodeData.address?.municipality || 
+            "Your Location"
+          );
+        } else {
+          weatherPath = weatherByCity("linkoping");
+          const weatherData = await fetcher<WeatherData>(weatherPath);
+          setWeather(weatherData);
+          setCityName(weatherData.location?.name || "Linköping");
+        }
+      } catch (err: any) {
+        setError(err.message);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    
+    getWeatherData();
+  }, [search, coords, askingLocation]);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || !weather || isHovered) return;
+
+    let animationFrameId: number;
+    let speed = 0.4;
+
+    const scrollLoop = () => {
+      container.scrollLeft += speed;
+      const maxScroll = container.scrollWidth - container.clientWidth;
+      if (container.scrollLeft >= maxScroll - 1) {
+        container.scrollLeft = 0;
+      }
+      animationFrameId = requestAnimationFrame(scrollLoop);
+    };
+
+    animationFrameId = requestAnimationFrame(scrollLoop);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [weather, isHovered]);
+
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (query.trim() !== "") {
+      setSearch(query.trim());
+    }
+  };
+
+  // Helper function to format the forecast update time
+  const formatUpdateTime = (isoString: string) => {
+    return new Date(isoString).toLocaleString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  };
+
+  const current = weather?.timeseries[0];
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="py-6 px-5 max-w-lg mx-auto overflow-hidden">
+      <style>{`
+        @keyframes fadeInUp {
+          from {
+            opacity: 0;
+            transform: translateY(12px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+
+        .animate-fade-in-up {
+          animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        .animate-fade-in {
+          animation: fadeIn 0.8s ease-out forwards;
+        }
+      `}</style>
+
+      {/* SEARCH FORM */}
+      <form onSubmit={handleSubmit} className="flex gap-2 mb-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search for a city..."
+          className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+        <button 
+          type="submit" 
+          className="bg-blue-600 text-white text-sm font-semibold rounded-lg px-4 py-2 hover:bg-blue-700 transition"
+        >
+          Search
+        </button>
+      </form>
+
+      {search && (
+        <button
+          onClick={() => {
+            setQuery("");
+            setSearch("");
+          }}
+          className="text-xs text-blue-600 underline mb-6 hover:text-blue-800"
+        >
+          Use my location instead
+        </button>
+      )}
+
+      {askingLocation && (
+        <p className="text-gray-500 text-center py-4">Asking for location permission...</p>
+      )}
+      
+      {!askingLocation && isLoading && (
+        <p className="text-gray-500 text-center py-4">Loading weather data...</p>
+      )}
+
+      {error && (
+        <div className="bg-red-50 text-red-700 border border-red-100 rounded-xl p-4 text-center mt-4">
+          ⚠️ Could not load weather: {error}
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+      )}
+
+      {/* WEATHER DISPLAY */}
+      {!askingLocation && !isLoading && !error && weather && current && (
+        <div className="mt-4 animate-fade-in">
+          {/* Resolved City Name & Time Display */}
+          <div className="mb-4">
+            <h1 className="text-2xl font-bold capitalize">
+              {cityName}
+            </h1>
+            <p className="text-xs text-gray-400">
+              Last updated: {formatUpdateTime(weather.referenceTime)}
+            </p>
+          </div>
+          
+          {/* Detailed Weather Card */}
+          <div className="bg-blue-50 border border-blue-100 rounded-3xl p-6 mb-8 shadow-sm">
+            
+            {/* Top row: Temp & Icon */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-5xl font-bold text-blue-500 tracking-tight">{current.temp}°C</p>
+                <p className="text-gray-600 capitalize mt-1">{current.summary}</p>
+              </div>
+              <div className="text-6xl animate-bounce" style={{ animationDuration: '3s' }}>
+                {getWeatherIcon(current.symbol)}
+              </div>
+            </div>
+
+            {/* Bottom row: Grid of detailed weather metrics */}
+            <div className="grid grid-cols-2 gap-4 mt-6 pt-6 border-t border-blue-200/50 text-sm">
+              {/* Wind Speed */}
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">💨</span>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">Wind</p>
+                  <p className="font-bold text-gray-800">{current.windSpeed} m/s</p>
+                </div>
+              </div>
+              
+              {/* Humidity */}
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">💧</span>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">Humidity</p>
+                  <p className="font-bold text-gray-800">{current.humidity}%</p>
+                </div>
+              </div>
+
+              {/* Rain / Snow Precipitation */}
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">🌧️</span>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">Precipitation</p>
+                  <p className="font-bold text-gray-800">{current.precipitationMean} mm</p>
+                </div>
+              </div>
+
+              {/* Atmospheric Pressure */}
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">🧭</span>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">Pressure</p>
+                  <p className="font-bold text-gray-800">{current.airPressure} hPa</p>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <h2 className="text-lg font-bold mb-3">Hourly Forecast</h2>
+          
+          {/* Horizontal Forecast */}
+          <div 
+            ref={scrollContainerRef}
+            onMouseEnter={() => setIsHovered(true)}
+            onMouseLeave={() => setIsHovered(false)}
+            onTouchStart={() => setIsHovered(true)}
+            onTouchEnd={() => setIsHovered(false)}
+            className="flex gap-3 overflow-x-auto pb-4 scrollbar-none cursor-grab active:cursor-grabbing"
           >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            {weather.timeseries.slice(0, 12).map((hourData, index) => (
+              <div 
+                key={hourData.validTime} 
+                className="flex-shrink-0 flex flex-col items-center justify-between p-4 bg-white border border-gray-200 rounded-2xl w-24 text-center shadow-xs opacity-0 animate-fade-in-up"
+                style={{
+                  animationDelay: `${index * 60}ms`,
+                }}
+              >
+                <span className="text-xs font-semibold text-gray-400">
+                  {new Date(hourData.validTime).toLocaleTimeString("en-US", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    hour12: false,
+                  })}
+                </span>
+                <span className="text-3xl my-3">
+                  {getWeatherIcon(hourData.symbol)}
+                </span>
+                <span className="text-sm font-bold text-gray-800">
+                  {hourData.temp}°C
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
-      </main>
+      )}
     </div>
   );
 }
